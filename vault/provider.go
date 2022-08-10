@@ -796,6 +796,18 @@ var (
 			Resource:      UpdateSchemaResource(kubernetesSecretBackendRoleResource()),
 			PathInventory: []string{"/kubernetes/roles/{name}"},
 		},
+		"vault_replication_primary_config": {
+			Resource:      UpdateSchemaResource(replicationPrimaryConfigResource()),
+			PathInventory: []string{"/sys/replication"},
+		},
+		"vault_replication_token": {
+			Resource:      UpdateSchemaResource(replicationTokenResource()),
+			PathInventory: []string{"/sys/replication"},
+		},
+		"vault_replication_secondary_config": {
+			Resource:      UpdateSchemaResource(replicationSecondaryConfigResource()),
+			PathInventory: []string{"/sys/replication"},
+		},
 	}
 )
 
