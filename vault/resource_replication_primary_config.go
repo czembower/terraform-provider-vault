@@ -1,10 +1,14 @@
 package vault
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 
 	"github.com/hashicorp/terraform-provider-vault/internal/provider"
@@ -102,24 +106,57 @@ func replicationPrimaryDeletePath(typeValue string) string {
 	return replicationPath + typeValue + "/primary/disable"
 }
 
-func waitForReplication(state string, path string, d *schema.ResourceData, meta interface{}) error {
+func waitForReplication(typeValue string, state string, path string, d *schema.ResourceData, meta interface{}) error {
 	log.Printf("[DEBUG] Waiting for replication state to be %s", state)
 	client, e := provider.GetClient(d, meta)
 	if e != nil {
 		return e
 	}
 
-	for {
-		resp, _ := client.Logical().Read(path)
-		if val, ok := resp.Data["state"]; ok {
+	if state == "running" {
+		state = "primary"
+	}
+	healthQuery := fmt.Sprintf("replication_%s_mode", typeValue)
+
+	retryRead := func() error {
+		r := client.NewRequest("GET", "/v1/sys/health")
+		r.Params.Add("standbyok", "true")
+		r.Params.Add("perfstandbyok", "true")
+		ctx, cancelFunc := context.WithCancel(context.Background())
+		defer cancelFunc()
+
+		resp, err := client.RawRequestWithContext(ctx, r)
+		if err == nil {
+			defer resp.Body.Close()
+		} else {
+			return err
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+
+		var data map[string]interface{}
+		if err := json.Unmarshal(body, &data); err != nil {
+			return err
+		}
+
+		if val, ok := data[healthQuery].(string); ok {
 			log.Printf("[DEBUG] Replication state: %s", val)
-			if resp.Data["state"] == state {
-				break
-			} else {
-				log.Printf("[DEBUG] Replication state: %s", val)
-				time.Sleep(1 * time.Second)
+			if val == state {
+				return nil
 			}
 		}
+
+		return fmt.Errorf("error waiting for replication")
+	}
+
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(1*time.Second), 10)
+	if err := backoff.RetryNotify(retryRead, bo, func(err error, duration time.Duration) {
+		log.Printf("[WARN] Replication pending, retrying in %s", duration)
+	}); err != nil {
+		return fmt.Errorf("error waiting replication at %s: %v", path, err)
 	}
 
 	return nil
@@ -156,8 +193,9 @@ func replicationPrimaryCreate(d *schema.ResourceData, meta interface{}) error {
 
 	log.Printf("[DEBUG] Replication (%s) enabled", typeValue)
 	d.SetId(path)
-	path = replicationPrimaryReadPath(typeValue)
-	waitForReplication("running", path, d, meta)
+
+	waitForReplication(typeValue, "running", path, d, meta)
+	log.Printf("[DEBUG] Replication (%s) started", typeValue)
 
 	return replicationPrimaryRead(d, meta)
 }
@@ -169,14 +207,10 @@ func replicationPrimaryRead(d *schema.ResourceData, meta interface{}) error {
 	}
 	typeValue := d.Get("type").(string)
 	path := replicationPrimaryReadPath(typeValue)
-
 	resp, err := client.Logical().Read(path)
 
 	if err != nil {
-		log.Printf("[DEBUG] error reading: %v", resp.Data)
 		return err
-	} else {
-		log.Printf("[DEBUG] Read %s: %v", path, resp.Data)
 	}
 
 	if resp.Data["mode"] == "disabled" {
@@ -212,6 +246,9 @@ func replicationPrimaryDelete(d *schema.ResourceData, meta interface{}) error {
 	if resp.Data["Errors"] != nil {
 		return fmt.Errorf("error disabling %s replication: %s", typeValue, resp.Data["Errors"])
 	}
+
+	waitForReplication(typeValue, "disabled", path, d, meta)
+	log.Printf("[DEBUG] Replication (%s) stopped/disabled", typeValue)
 
 	return nil
 }

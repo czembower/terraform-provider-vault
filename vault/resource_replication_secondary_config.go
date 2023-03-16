@@ -145,15 +145,15 @@ func replicationSecondaryCreate(d *schema.ResourceData, meta interface{}) error 
 	if resp == nil {
 		log.Printf("[DEBUG] Response from client was nil")
 	} else {
-		if error, ok := resp.Data["Errors"]; ok {
-			return fmt.Errorf("error enabling %s replication: %s", typeValue, error)
+		if err, ok := resp.Data["Errors"]; ok {
+			return fmt.Errorf("error returned from %s primary: %s", typeValue, err)
 		}
 	}
 
 	log.Printf("[DEBUG] Replication (%s) enabled", typeValue)
 	d.SetId(path)
 	path = replicationSecondaryReadPath(typeValue)
-	waitForReplication("stream-wals", path, d, meta)
+	// waitForReplication("stream-wals", path, d, meta)
 
 	return replicationSecondaryRead(d, meta)
 }
